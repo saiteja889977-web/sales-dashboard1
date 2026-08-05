@@ -1,147 +1,136 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 import os
 
-# ---------------------------------------------------------
-# Page Configuration
-# ---------------------------------------------------------
+# Page Config
 st.set_page_config(
-    page_title="Sales Intelligence Dashboard",
+    page_title="Secondary Sales Intelligence",
     page_icon="📊",
     layout="wide"
 )
 
-st.title("📊 Sales Intelligence Dashboard")
+st.title("📊 Secondary Sales Dashboard")
 
-# ---------------------------------------------------------
-# Dynamic Data Processing Engine
-# ---------------------------------------------------------
 def process_data(file_source):
-    df = pd.read_excel(file_source, sheet_name=0)
-    df.columns = df.columns.astype(str).str.strip()
+    # Load sheet and automatically detect the header row containing 'USER'
+    raw_file = pd.ExcelFile(file_source)
+    sheet_name = raw_file.sheet_names[0]
     
-    # Smart column mapping dictionary
+    # Preview top rows to find header offset
+    preview_df = pd.read_excel(file_source, sheet_name=sheet_name, nrows=10, header=None)
+    header_idx = 0
+    for idx, row in preview_df.iterrows():
+        row_str = row.astype(str).str.upper().tolist()
+        if any('USER' in val for val in row_str):
+            header_idx = idx
+            break
+
+    # Read data with correct header row offset
+    df = pd.read_excel(file_source, sheet_name=sheet_name, header=header_idx)
+    df.columns = df.columns.astype(str).str.strip().str.upper()
+
+    # Column Mapping Strategy
     mapping = {}
+    ordinal_cols = []
+    
     for col in df.columns:
-        c_upper = col.upper()
-        if any(k in c_upper for k in ['USER', 'REP', 'AGENT', 'NAME', 'SALES PERSON']):
+        if 'USER' in col:
             mapping[col] = 'USER'
-        elif any(k in c_upper for k in ['DISTRIBUTOR', 'DEALER', 'CLIENT', 'STORE', 'PARTY']):
+        elif 'DISTRIBUTOR' in col:
             mapping[col] = 'Distributor'
-        elif any(k in c_upper for k in ['BEAT', 'ROUTE', 'AREA', 'CITY', 'TOWN']):
+        elif 'BEAT' in col:
             mapping[col] = 'Beat'
-        elif any(k in c_upper for k in ['QTY', 'QUANTITY', 'VOLUME', 'UNITS', 'SALES QTY']):
+        elif 'PRIMARY' in col:
+            mapping[col] = 'Primary Category'
+        elif col == 'QTY' or 'TOTAL' in col:
             mapping[col] = 'QTY'
-        elif any(k in c_upper for k in ['CATEGORY', 'PRODUCT', 'BRAND', 'ITEM']):
-            mapping[col] = 'PrimaryCategory'
-        elif 'PERIOD 1' in c_upper or 'P1' in c_upper:
-            mapping[col] = 'Period 1'
-        elif 'PERIOD 2' in c_upper or 'P2' in c_upper:
-            mapping[col] = 'Period 2'
-            
+        elif any(ord_word in col for ord_word in ['FIRST', 'SECON', 'THIRD', 'FOURT', 'FIFTH', 'SIXTH', 'SEVENT', 'EIGHT', 'NINTH', 'TENTH']):
+            ordinal_cols.append(col)
+
     df = df.rename(columns=mapping)
-    
-    # Fallback default columns if missing in upload
-    if 'PrimaryCategory' not in df.columns:
-        df['PrimaryCategory'] = 'General Category'
-    else:
-        df['PrimaryCategory'] = df['PrimaryCategory'].fillna('General Category')
 
-    if 'QTY' not in df.columns:
-        num_cols = df.select_dtypes(include=['number']).columns
-        df['QTY'] = df[num_cols[0]] if len(num_cols) > 0 else 1
+    # Convert numeric ordinal columns and compute Total QTY if not present
+    for c in ordinal_cols:
+        df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
 
-    if 'USER' not in df.columns:
-        df['USER'] = 'Unassigned Rep'
-    if 'Distributor' not in df.columns:
-        df['Distributor'] = 'Unassigned Distributor'
-    if 'Beat' not in df.columns:
-        df['Beat'] = 'Unassigned Beat'
+    if 'QTY' not in df.columns or df['QTY'].sum() == 0:
+        if ordinal_cols:
+            df['QTY'] = df[ordinal_cols].sum(axis=1)
+        else:
+            num_cols = df.select_dtypes(include=['number']).columns
+            df['QTY'] = df[num_cols].sum(axis=1) if len(num_cols) > 0 else 0
 
-    if 'Period 1' not in df.columns: 
-        df['Period 1'] = df['QTY'] * 0.45
-    if 'Period 2' not in df.columns: 
-        df['Period 2'] = df['QTY'] * 0.55
-        
-    # Clean numeric types
+    # Ensure required textual columns exist
+    for required_col, default_val in [('USER', 'Unassigned'), ('Distributor', 'Unassigned'), ('Beat', 'Unassigned'), ('Primary Category', 'General')]:
+        if required_col not in df.columns:
+            df[required_col] = default_val
+        else:
+            df[required_col] = df[required_col].fillna(default_val)
+
+    # Drop completely empty rows
+    df = df.dropna(subset=['USER', 'Distributor'], how='all')
     df['QTY'] = pd.to_numeric(df['QTY'], errors='coerce').fillna(0)
-    df['Period 1'] = pd.to_numeric(df['Period 1'], errors='coerce').fillna(0)
-    df['Period 2'] = pd.to_numeric(df['Period 2'], errors='coerce').fillna(0)
     
-    return df
+    return df, ordinal_cols
 
-# ---------------------------------------------------------
-# Data Ingestion (Sidebar Upload & Repo Default)
-# ---------------------------------------------------------
+# Sidebar File Ingestion
 st.sidebar.header("📂 Data Ingestion")
 uploaded_file = st.sidebar.file_uploader("Upload Excel File (.xlsx)", type=["xlsx", "xls"])
 
 raw_df = None
+ordinal_cols = []
 
 if uploaded_file is not None:
     try:
-        raw_df = process_data(uploaded_file)
-        st.sidebar.success("🎉 Custom dataset loaded!")
+        raw_df, ordinal_cols = process_data(uploaded_file)
+        st.sidebar.success("🎉 Excel file loaded successfully!")
     except Exception as e:
         st.sidebar.error(f"Error parsing uploaded file: {e}")
 
-# Fallback to file stored in repository if no upload provided
 elif os.path.exists("Secondary Order Dump (New)_01-07-26 to 28-07-26.xlsx"):
     try:
-        raw_df = process_data("Secondary Order Dump (New)_01-07-26 to 28-07-26.xlsx")
-        st.sidebar.info("ℹ️ Using repo default Excel sheet.")
+        raw_df, ordinal_cols = process_data("Secondary Order Dump (New)_01-07-26 to 28-07-26.xlsx")
+        st.sidebar.info("ℹ️ Loaded repository default Excel file.")
     except Exception as e:
-        st.sidebar.warning("Could not automatically load repo default dataset.")
+        st.sidebar.warning("Repo default file could not be parsed.")
 
-# Empty state fallback
 if raw_df is None or raw_df.empty:
-    st.info("👋 **Welcome! Please upload your sales Excel file in the sidebar to populate the dashboard.**")
+    st.info("👋 **Please upload your sales Excel spreadsheet in the sidebar to load the dashboard.**")
     st.stop()
 
-# ---------------------------------------------------------
-# Dashboard Views & Analytics
-# ---------------------------------------------------------
-st.sidebar.markdown("---")
-u_opts = ["All Users"] + sorted(raw_df["USER"].astype(str).unique().tolist())
+# Representative Selection Filter
+u_opts = ["All Users"] + sorted([str(u) for u in raw_df["USER"].unique() if pd.notna(u)])
 sel_user = st.sidebar.selectbox("Filter by Representative:", u_opts)
 
 working_df = raw_df.copy()
 if sel_user != "All Users":
     working_df = working_df[working_df["USER"] == sel_user]
 
-# Top Metrics Row
+# Top KPI Bar
 kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-kpi1.metric("Total Volume (QTY)", f"{int(working_df['QTY'].sum()):,}")
+kpi1.metric("Total Sales Volume (QTY)", f"{int(working_df['QTY'].sum()):,}")
 kpi2.metric("Active Reps", working_df["USER"].nunique())
 kpi3.metric("Distributors", working_df["Distributor"].nunique())
 kpi4.metric("Beats/Routes", working_df["Beat"].nunique())
 
 st.markdown("---")
 
-# Visualizations Row
+# Visualizations
 col_left, col_right = st.columns(2)
 
 with col_left:
-    st.subheader("📊 Category Distribution")
-    cat_summary = working_df.groupby('PrimaryCategory')['QTY'].sum().reset_index()
-    fig_pie = px.pie(cat_summary, values='QTY', names='PrimaryCategory', hole=0.4,
-                     color_discrete_sequence=px.colors.qualitative.Pastel)
-    st.plotly_chart(fig_pie, use_container_width=True)
+    st.subheader("📊 Volume by Representative")
+    rep_summary = working_df.groupby('USER')['QTY'].sum().reset_index().sort_values(by='QTY', ascending=False)
+    fig_rep = px.bar(rep_summary, x='USER', y='QTY', color='USER', text_auto='.2s')
+    st.plotly_chart(fig_rep, use_container_width=True)
 
 with col_right:
-    st.subheader("📈 Period Comparison")
-    period_data = pd.DataFrame({
-        'Period': ['Period 1', 'Period 2'],
-        'QTY': [working_df['Period 1'].sum(), working_df['Period 2'].sum()]
-    })
-    fig_bar = px.bar(period_data, x='Period', y='QTY', color='Period', text_auto='.2s')
-    st.plotly_chart(fig_bar, use_container_width=True)
+    st.subheader("🏪 Top Distributors by Volume")
+    dist_summary = working_df.groupby('Distributor')['QTY'].sum().reset_index().sort_values(by='QTY', ascending=False).head(10)
+    fig_dist = px.bar(dist_summary, x='QTY', y='Distributor', orientation='h', text_auto='.2s')
+    st.plotly_chart(fig_dist, use_container_width=True)
 
-# Detailed Data Table
-st.subheader("📋 Ledger Details")
-st.dataframe(
-    working_df[['USER', 'Distributor', 'Beat', 'PrimaryCategory', 'Period 1', 'Period 2', 'QTY']],
-    use_container_width=True
-)
+# Data Table Display
+st.subheader("📋 Ledger Data")
+st.dataframe(working_df, use_container_width=True)
