@@ -231,9 +231,11 @@ with tab_main:
         </div>
     """, unsafe_allow_html=True)
 
+    # Clean WhatsApp box formatting (pre-calculating replaced HTML to avoid f-string backslash error)
     with st.expander("💬 Generate WhatsApp-Ready Text Summary"):
         wa_text = f"📊 *Sales Performance Update*\n\n*Target Focus:* {sel_user}\n*Total Volume:* {int(gl_tot):,} Units\n*Period 1 vs Period 2:* {int(p1_tot):,} ➔ {int(p2_tot):,} ({growth_arrow}{abs(growth_rate):.1f}%)\n*Active Beats Covered:* {working_df[beat_col].nunique()}"
-        st.markdown(f'<div class="whatsapp-box">{wa_text.replace("\n", "<br>")}</div>', unsafe_allow_html=True)
+        wa_html = wa_text.replace("\n", "<br>")
+        st.markdown(f'<div class="whatsapp-box">{wa_html}</div>', unsafe_allow_html=True)
 
     k1, k2, k3, k4 = st.columns(4)
     with k1: st.markdown(f'<div class="kpi-card"><p style="color:#6B7280;margin:0;">📦 Segment Volume</p><h2>{int(gl_tot):,}</h2></div>', unsafe_allow_html=True)
